@@ -122,3 +122,16 @@ The training and prediction scripts now choose the best available backend automa
 On Apple Silicon, the code now defaults to `num_workers: 0` unless you override it in the YAML. This is the safest default for PIL-based image loading on macOS. If you want to tune for your machine, start with `0`, then try `2`, and compare epoch time and stability.
 
 Prediction now requires a trained FCN checkpoint. If `pretrain_dir` or `pretrain_epoch` is missing or incorrect in `config_predict.yaml`, the script will stop with an error instead of silently running with random weights.
+
+If PyTorch reports that MPS is unavailable on Apple Silicon, the scripts now emit a startup warning and fall back to CPU. This has been observed on macOS 26 with recent PyTorch wheels even in clean arm64 Python environments.
+
+Short CPU-only throughput checks on the current M1 setup were roughly flat across larger batch sizes:
+
+* BYOL: about `9.9 images/s`
+* PIXCL: about `9.5 images/s`
+
+That means batch-size changes alone are unlikely to cut wall-clock time much on this machine. The most effective CPU-side defaults are:
+
+* keep `num_workers` at `0`
+* keep `resnet18`
+* use BYOL or PIXCL as configured, but reduce `max_epochs` only if you are doing an exploratory run rather than a final training run

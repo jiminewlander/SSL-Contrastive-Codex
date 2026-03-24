@@ -16,7 +16,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 from shutil import copyfile
-from utils.runtime import get_best_device, configure_torch_runtime
+from utils.runtime import get_best_device, configure_torch_runtime, warn_if_apple_silicon_mps_unavailable
 
 def normalize_optional(value):
     if value in (None, '', 'None', 'none', 'null', 'Null'):
@@ -74,6 +74,7 @@ if __name__ == '__main__':
     config = yaml.safe_load(open("config_predict.yaml", "r"))
     device = get_best_device()
     configure_torch_runtime(device)
+    warn_if_apple_silicon_mps_unavailable(device)
     pretrain_dir = normalize_optional(config.get('pretrain_dir'))
     pretrain_epoch = normalize_optional(config.get('pretrain_epoch'))
 

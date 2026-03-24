@@ -5,6 +5,7 @@ backend-specific behavior in one place.
 from contextlib import nullcontext
 import os
 import platform
+import warnings
 
 import torch
 
@@ -30,6 +31,30 @@ def configure_torch_runtime(device: torch.device) -> None:
 
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
+
+
+def warn_if_apple_silicon_mps_unavailable(device: torch.device) -> None:
+    """
+    Surface the most important runtime fact early: on some recent macOS builds,
+    PyTorch reports MPS as built but unavailable, which means training falls
+    back to CPU even on Apple Silicon.
+    """
+    mps_backend = getattr(torch.backends, "mps", None)
+    if (
+        platform.system() == "Darwin"
+        and platform.machine() == "arm64"
+        and device.type == "cpu"
+        and mps_backend is not None
+        and mps_backend.is_built()
+        and not mps_backend.is_available()
+    ):
+        warnings.warn(
+            "Apple Silicon detected, but PyTorch MPS is unavailable in this "
+            "environment. Training will run on CPU. This appears to be a "
+            "PyTorch/macOS runtime issue rather than a repository issue.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
 
 def resolve_num_workers(value) -> int:

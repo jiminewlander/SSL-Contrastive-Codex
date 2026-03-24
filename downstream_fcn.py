@@ -27,6 +27,7 @@ from utils.runtime import (
     grad_scaler,
     resolve_num_workers,
     should_pin_memory,
+    warn_if_apple_silicon_mps_unavailable,
 )
 
 def normalize_optional(value):
@@ -78,6 +79,7 @@ if __name__ == '__main__':
     config = yaml.safe_load(open("config_fcn.yaml", "r"))
     device = get_best_device()
     configure_torch_runtime(device)
+    warn_if_apple_silicon_mps_unavailable(device)
     print(f"Training with: {device}")
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
     pretrain_dir = normalize_optional(config.get('pretrain_dir'))

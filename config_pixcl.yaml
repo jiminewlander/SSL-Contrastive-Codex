@@ -31,9 +31,10 @@ learner:
   alpha: 1.
   # weight of the pixel propagation loss (pixpro) vs pixel CL loss
   batch_size: 100 
+  # On the tested M1 CPU-only path, larger batches did not materially improve throughput.
   max_epochs: 20 
   num_workers: None 
-  # for plasma max(num_workers) = 48, None - obtain from os.cpu_count() 
+  # Apple Silicon defaults to 0 workers automatically when MPS is unavailable.
 
 dataset:
   imgs_dir: 'data/pretrain/imgs'

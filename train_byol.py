@@ -9,7 +9,7 @@ import utils.custom_transform as CT
 from utils.data_loader import CustomDataset
 import torchvision
 from utils.pixcl_multi import NetWrapperMultiLayers, MLP, BYOLTrainer
-from utils.runtime import get_best_device, configure_torch_runtime
+from utils.runtime import get_best_device, configure_torch_runtime, warn_if_apple_silicon_mps_unavailable
 import os
 from copy import deepcopy
 
@@ -26,6 +26,7 @@ if __name__ == '__main__':
     config = yaml.safe_load(open("config_byol.yaml", "r"))
     device = get_best_device()
     configure_torch_runtime(device)
+    warn_if_apple_silicon_mps_unavailable(device)
     print(f"Learning with: {device}")
     pretrain_dir = normalize_optional(config.get('pretrain_dir'))
     pretrain_epoch = normalize_optional(config.get('pretrain_epoch'))
