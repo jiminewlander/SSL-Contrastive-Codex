@@ -64,7 +64,7 @@ Supporting modules:
 
 ## Local setup
 
-The repository does not ship with a dependency manifest or portable config paths. Before running anything locally:
+The repository ships with a dependency manifest in `requirements.txt`, but the config paths are still local-directory based. Before running anything locally:
 
 1. Create an environment and install dependencies.
 2. Put your data into the local project directories described below.
@@ -110,3 +110,15 @@ python predict_fcn.py
 ```
 
 TensorBoard logs and checkpoints are written under `runs/`.
+
+## Apple Silicon notes
+
+The training and prediction scripts now choose the best available backend automatically:
+
+* `cuda` on NVIDIA GPUs
+* `mps` on Apple Silicon
+* `cpu` otherwise
+
+On Apple Silicon, the code now defaults to `num_workers: 0` unless you override it in the YAML. This is the safest default for PIL-based image loading on macOS. If you want to tune for your machine, start with `0`, then try `2`, and compare epoch time and stability.
+
+Prediction now requires a trained FCN checkpoint. If `pretrain_dir` or `pretrain_epoch` is missing or incorrect in `config_predict.yaml`, the script will stop with an error instead of silently running with random weights.

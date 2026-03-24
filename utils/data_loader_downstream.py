@@ -39,10 +39,10 @@ def load_image(filename, channels):
     elif ext in ['.pt', '.pth']:
         return Image.fromarray(torch.load(filename).numpy())
     else:
-        if channels == 3:
-            return Image.open(filename).convert("RGB")
-        else:
-            return Image.open(filename)
+        with Image.open(filename) as img:
+            if channels == 3:
+                return img.convert("RGB")
+            return img.copy()
 
 def unique_mask_values(idx, mask_dir, mask_suffix, channels):
     mask_file = list(mask_dir.glob(idx + mask_suffix + '.*'))[0]
@@ -71,7 +71,7 @@ class CustomDataset(Dataset):
     """
     def __init__(self, images_dir: str, mask_dir: str, 
             scale: float = 1.0, mask_suffix: str = '', 
-            channels: int = 3, mask_values: int = 2):
+            channels: int = 3, mask_values=None):
 
         self.images_dir = Path(images_dir)
         self.mask_dir = Path(mask_dir)
@@ -85,7 +85,9 @@ class CustomDataset(Dataset):
             raise RuntimeError(f'No input file found in {images_dir}, make sure you put your images there')
 
         logging.info(f'Creating dataset with {len(self.ids)} examples')
-        if mask_values[0] == 2:
+        if mask_values in (None, 2) or (
+            isinstance(mask_values, (list, tuple)) and len(mask_values) == 1 and mask_values[0] == 2
+        ):
             logging.info('Scanning mask files to determine unique values')
             with Pool() as p:
                 unique = list(tqdm(
@@ -95,7 +97,7 @@ class CustomDataset(Dataset):
                 ))
             self.mask_values = list(sorted(np.unique(np.concatenate(unique), axis=0).tolist()))
         else: 
-            self.mask_values = mask_values 
+            self.mask_values = list(mask_values)
         logging.info(f'Unique mask values: {self.mask_values}')
 
     def __len__(self):

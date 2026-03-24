@@ -8,7 +8,7 @@ pretrain_epoch: None
 # Example: pretrain_epoch: '3'
 # Specify epoch from a pre-trained model
 opt_method: 'radam'
-# option 'adam' 'radam' or 'adam_hd'
+# options: 'adam' or 'radam'
 
 learner:
   image_sizeH: 82

@@ -18,6 +18,7 @@ from torch.utils.tensorboard import SummaryWriter
 from shutil import copyfile
 from datetime import datetime
 import torchvision
+from utils.runtime import resolve_num_workers, should_pin_memory
 
 def _create_model_training_folder(writer, files_to_same):
     model_checkpoints_folder = os.path.join(writer.log_dir, 'checkpoints')
@@ -294,14 +295,15 @@ class BYOLTrainer():
         self.target_ema_updater = EMA(params['moving_average_decay'])
         self.batch_size = params['batch_size']
         self.max_epochs = params['max_epochs']
-        self.num_workers = params['num_workers'] if params['num_workers'] != 'None' else os.cpu_count()
+        self.num_workers = resolve_num_workers(params['num_workers'])
         self.pdict = nn.PairwiseDistance(p=2.0)
         self.writer = SummaryWriter(log_dir=os.path.join('runs','byol_'+datetime.now().strftime("%Y%m%d-%H%M%S")))
         _create_model_training_folder(self.writer, files_to_same=["./config_byol.yaml","./train_byol.py","./utils/pixcl_multi.py"])
 
     def train(self, train_dataset):
         train_loader = DataLoader(train_dataset, batch_size=self.batch_size, 
-                num_workers=self.num_workers, drop_last=False, shuffle=True)
+                num_workers=self.num_workers, drop_last=False, shuffle=True,
+                pin_memory=should_pin_memory(self.device))
         niter = 0
         model_checkpoints_folder = os.path.join(self.writer.log_dir, 'checkpoints')
 
@@ -423,13 +425,14 @@ class PixclLearner():
         self.batch_size = params['batch_size']
         self.max_epochs = params['max_epochs']
         self.pdict = nn.PairwiseDistance(p=2.0)
-        self.num_workers = params['num_workers'] if params['num_workers'] != 'None' else os.cpu_count()
+        self.num_workers = resolve_num_workers(params['num_workers'])
         self.writer = SummaryWriter(log_dir=os.path.join('runs','pixcl_'+datetime.now().strftime("%Y%m%d-%H%M%S")))
         _create_model_training_folder(self.writer, files_to_same=["./config_pixcl.yaml","./train_pixcl.py","./utils/pixcl_multi.py"])
 
     def train(self, train_dataset):
         train_loader = DataLoader(train_dataset, batch_size=self.batch_size, 
-                num_workers=self.num_workers, drop_last=False, shuffle=True)
+                num_workers=self.num_workers, drop_last=False, shuffle=True,
+                pin_memory=should_pin_memory(self.device))
 
         niter = 0
         model_checkpoints_folder = os.path.join(self.writer.log_dir, 'checkpoints')

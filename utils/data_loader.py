@@ -10,10 +10,12 @@ from torchvision import transforms
 from torch.utils.data import Dataset
 
 def load_image(filename, channels): 
-    if channels == 3:
-        return Image.open(filename).convert("RGB")
-    else:
-        return Image.open(filename)
+    # Explicitly close the source file so DataLoader workers do not keep many
+    # PNG handles alive on macOS while PIL is still decoding them.
+    with Image.open(filename) as img:
+        if channels == 3:
+            return img.convert("RGB")
+        return img.copy()
 
 class CustomDataset(Dataset):
     """

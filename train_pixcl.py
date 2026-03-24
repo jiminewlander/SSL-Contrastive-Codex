@@ -9,6 +9,7 @@ import utils.custom_transform as CT
 from utils.data_loader import CustomDataset
 import torchvision
 from utils.pixcl_multi import NetWrapperMultiLayers, PPM, MLP, ConvMLP, PixclLearner
+from utils.runtime import get_best_device, configure_torch_runtime
 import os
 from copy import deepcopy
 
@@ -23,7 +24,8 @@ def normalize_optional(value):
 
 if __name__ == '__main__':
     config = yaml.safe_load(open("config_pixcl.yaml", "r"))
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = get_best_device()
+    configure_torch_runtime(device)
     print(f"Learning with: {device}")
     pretrain_dir = normalize_optional(config.get('pretrain_dir'))
     pretrain_epoch = normalize_optional(config.get('pretrain_epoch'))

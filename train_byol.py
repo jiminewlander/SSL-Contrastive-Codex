@@ -9,9 +9,9 @@ import utils.custom_transform as CT
 from utils.data_loader import CustomDataset
 import torchvision
 from utils.pixcl_multi import NetWrapperMultiLayers, MLP, BYOLTrainer
+from utils.runtime import get_best_device, configure_torch_runtime
 import os
 from copy import deepcopy
-#from utils.adam_hd import Adam_HD
 
 print(torch.__version__)
 # controlling sources of randomness
@@ -24,7 +24,8 @@ def normalize_optional(value):
 
 if __name__ == '__main__':
     config = yaml.safe_load(open("config_byol.yaml", "r"))
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = get_best_device()
+    configure_torch_runtime(device)
     print(f"Learning with: {device}")
     pretrain_dir = normalize_optional(config.get('pretrain_dir'))
     pretrain_epoch = normalize_optional(config.get('pretrain_epoch'))
@@ -71,10 +72,10 @@ if __name__ == '__main__':
         config['learner']['projection_hidden_size']).to(device)
     
     if config['opt_method'] == 'adam_hd':
-        opt = Adam_HD(list(online_encoder.parameters()) +
-              list(online_projector.parameters()) +
-              list(online_predictor.parameters()),
-              **config['optimizer'])
+        raise ValueError(
+            "opt_method='adam_hd' is not supported in this repository because "
+            "the Adam_HD implementation is not bundled. Use 'adam' or 'radam'."
+        )
     elif config['opt_method'] == 'radam':
         opt = torch.optim.RAdam(list(online_encoder.parameters()) +
               list(online_projector.parameters()) +

@@ -20,6 +20,14 @@ from tqdm import tqdm
 import torch.nn.functional as F
 from utils.hausdorff import hausdorff_distance
 import logging
+from utils.runtime import (
+    autocast_context,
+    configure_torch_runtime,
+    get_best_device,
+    grad_scaler,
+    resolve_num_workers,
+    should_pin_memory,
+)
 
 def normalize_optional(value):
     if value in (None, '', 'None', 'none', 'null', 'Null'):
@@ -40,7 +48,7 @@ def evaluate(net, dataloader, device, criterion):
     running_lossF = 0
     running_lossT = 0
     running_lossH = 0
-    with torch.cuda.amp.autocast(enabled=device.type == 'cuda'):
+    with autocast_context(device):
         for batch in tqdm(dataloader, total=num_val_batches, desc='Validation', unit='batch', leave=False):
             image, true_mask = batch['image'], batch['mask']
             image = image.to(device=device, dtype=torch.float32)
@@ -51,10 +59,15 @@ def evaluate(net, dataloader, device, criterion):
             loss2 = focal_tversky_loss(torch.sigmoid(pred_mask.squeeze(1)),
                     true_mask.float(), multiclass=False, alpha=0.3, beta=0.7, gamma=2.)
             mask = torch.sigmoid(pred_mask) > 0.5
-            hd = hausdorff_distance(mask.squeeze().cpu().numpy(), true_mask.squeeze().cpu().numpy())
+            # Compute Hausdorff distance per image; the metric is not defined over
+            # an entire batch treated as one larger volume.
+            batch_hd = []
+            for pred_item, true_item in zip(mask[:, 0], true_mask):
+                hd = hausdorff_distance(pred_item.cpu().numpy(), true_item.cpu().numpy())
+                batch_hd.append(hd['mean'])
             running_lossF += loss1.item()
             running_lossT += loss2.item()
-            running_lossH += hd['mean']
+            running_lossH += sum(batch_hd) / max(len(batch_hd), 1)
     net.train()
     running_lossF = running_lossF/max(num_val_batches, 1)
     running_lossT = running_lossT/max(num_val_batches, 1)
@@ -63,7 +76,8 @@ def evaluate(net, dataloader, device, criterion):
 
 if __name__ == '__main__':
     config = yaml.safe_load(open("config_fcn.yaml", "r"))
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = get_best_device()
+    configure_torch_runtime(device)
     print(f"Training with: {device}")
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
     pretrain_dir = normalize_optional(config.get('pretrain_dir'))
@@ -116,22 +130,22 @@ if __name__ == '__main__':
     # Create data loaders
     loader_args = dict(
         batch_size=config['trainer']['batch_size'], 
-        num_workers=config['trainer']['num_workers'] if config['trainer']['num_workers'] != 'None' else os.cpu_count(), 
-        pin_memory=True)
+        num_workers=resolve_num_workers(config['trainer']['num_workers']),
+        pin_memory=should_pin_memory(device))
     train_loader = DataLoader(train_set,shuffle=True,drop_last=False,**loader_args)
-    val_loader = DataLoader(val_set,shuffle=False,drop_last=True,**loader_args)
+    val_loader = DataLoader(val_set,shuffle=False,drop_last=False,**loader_args)
 
     # Set up Loss Functions, Optimizer
     kwargs = {"alpha":0.6, "gamma":2.0, "reduction":'mean'}
     criterion = BinaryFocalLossWithLogits(**kwargs)
-    criterionH = HausdorffERLoss(alpha=2.0,k=10)
+    criterionH = HausdorffERLoss(alpha=2.0, erosions=10)
     optimizer = torch.optim.Adam(fcn.parameters(), **config['optimizer'])
 
     writer = SummaryWriter(log_dir=os.path.join('runs','fcn_'+datetime.now().strftime("%Y%m%d-%H%M%S")))
     _create_model_training_folder(writer, files_to_same=["./config_fcn.yaml","./downstream_fcn.py"])
     model_checkpoints_folder = os.path.join(writer.log_dir, 'checkpoints')
 
-    grad_scaler = torch.cuda.amp.GradScaler(enabled=device.type == 'cuda')
+    scaler = grad_scaler(device)
     global_step = 0
     max_epochs = config['trainer']['max_epochs']
     for epoch_counter in range(1, max_epochs+1):
@@ -145,7 +159,7 @@ if __name__ == '__main__':
                 # pred_masks [b, class, H, W] float32
                 images = images.to(device=device, dtype=torch.float32)
                 true_masks = true_masks.to(device=device, dtype=torch.long)
-                with torch.cuda.amp.autocast(enabled=device.type == 'cuda'):
+                with autocast_context(device):
                     pred_masks = fcn(images)
                     loss1 = criterion(pred_masks.squeeze(1), true_masks.float())
                     loss2 = focal_tversky_loss(torch.sigmoid(pred_masks.squeeze(1)), 
@@ -157,10 +171,10 @@ if __name__ == '__main__':
                     cnt += 1
 
                 optimizer.zero_grad(set_to_none=True)
-                grad_scaler.scale(loss).backward()
+                scaler.scale(loss).backward()
                 torch.nn.utils.clip_grad_norm_(fcn.parameters(), 1.0)
-                grad_scaler.step(optimizer)
-                grad_scaler.update()
+                scaler.step(optimizer)
+                scaler.update()
                 pbar.update(images.shape[0])
                 global_step += 1
                 epoch_loss += loss.item()

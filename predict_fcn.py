@@ -16,6 +16,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 from shutil import copyfile
+from utils.runtime import get_best_device, configure_torch_runtime
 
 def normalize_optional(value):
     if value in (None, '', 'None', 'none', 'null', 'Null'):
@@ -61,7 +62,7 @@ def plot_img_and_mask(img, pred_mask, true_mask, name, out_dir, hd):
     ax2.set_box_aspect(true_mask.shape[0]/true_mask.shape[1])
     ax2.set_xlim(0, true_mask.shape[1])
     ax2.set_ylim(0, true_mask.shape[0])
-    ax2.set_title('Hausdorff Distance(95% conf)={:6.3f}$\pm${:5.3f}'.format(hd['mean'],hd['c95']))
+    ax2.set_title('Hausdorff Distance(95% conf)={:6.3f}$\\pm${:5.3f}'.format(hd['mean'],hd['c95']))
     ax2.set_xlabel('Time step')
     ax2.set_ylabel('Frequency step')
     ax2.legend()
@@ -71,7 +72,8 @@ def plot_img_and_mask(img, pred_mask, true_mask, name, out_dir, hd):
 
 if __name__ == '__main__':
     config = yaml.safe_load(open("config_predict.yaml", "r"))
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = get_best_device()
+    configure_torch_runtime(device)
     pretrain_dir = normalize_optional(config.get('pretrain_dir'))
     pretrain_epoch = normalize_optional(config.get('pretrain_epoch'))
 
@@ -108,7 +110,14 @@ if __name__ == '__main__':
             mask_values = load_params.pop('mask_values', [0, 1])
             fcn.load_state_dict(load_params['fcn_state_dict'])
         except FileNotFoundError:
-            print("Pre-trained weights not found. Training from scratch.")
+            raise FileNotFoundError(
+                f"Pre-trained FCN weights were not found under {checkpoints_dir}. "
+                "Prediction requires a trained checkpoint."
+            )
+    else:
+        raise ValueError(
+            "config_predict.yaml must set pretrain_dir and pretrain_epoch to a trained FCN run."
+        )
 
     img_dir = config['image']['dir']
     in_files = os.listdir(img_dir)
@@ -116,24 +125,22 @@ if __name__ == '__main__':
     Path(out_dir).mkdir(parents=True, exist_ok=True)
     copyfile('config_predict.yaml',out_dir+'/config_predict.yaml')
     copyfile('predict_fcn.py',out_dir+'/predict_fcn.py')
-    fout = open(out_dir+'/prediction_metrices.txt', 'w')
-    fout.write("Prediction Metrices based on Hausdorff Distance\n")
-    fout.write("filename    HD-mean HD-median  HD-std  HD-c95   HD-var  HD-max\n")
+    with open(out_dir+'/prediction_metrices.txt', 'w') as fout:
+        fout.write("Prediction Metrices based on Hausdorff Distance\n")
+        fout.write("filename    HD-mean HD-median  HD-std  HD-c95   HD-var  HD-max\n")
 
-    for i, name in enumerate(in_files):
-        img = Image.open(img_dir+'/'+name).convert("RGB")
-        mask = predict_img(net=fcn, device=device, pil_img=img, out_threshold=config['predict']['out_threshold'])
-        mask_name = config['image']['mask_dir']+'/'+os.path.splitext(name)[0]+config['image']['mask_suffix']+'.png'
-        org_mask = cv2.imread(mask_name, 0)
-        m_values = [org_mask.min(),org_mask.max()]
-        true_mask = np.zeros((org_mask.shape[0],org_mask.shape[1]),dtype=np.int64)
-        for i, v in enumerate(m_values):
-            true_mask[org_mask == v] = len(m_values)-1-i
-            # convert 255 to be assigned "0" and 0 to be assigned as "1"
-        hd = hausdorff_distance(mask, true_mask)
-        fout.write('{0} {1:8.5f} {2:8.5f} {3:8.5f} {4:8.5f} {5:8.5f} {6:8.5f}\n'.format(name,
-                hd["mean"],hd["median"],hd["std"],hd["c95"],hd["var"],hd["max"]))
-        if config['predict']['plot']:
-            plot_img_and_mask(img, mask, true_mask, name, config['predict']['out_dir'], hd)
-
-    fout.close()
+        for i, name in enumerate(in_files):
+            img = Image.open(img_dir+'/'+name).convert("RGB")
+            mask = predict_img(net=fcn, device=device, pil_img=img, out_threshold=config['predict']['out_threshold'])
+            mask_name = config['image']['mask_dir']+'/'+os.path.splitext(name)[0]+config['image']['mask_suffix']+'.png'
+            org_mask = cv2.imread(mask_name, 0)
+            m_values = [org_mask.min(),org_mask.max()]
+            true_mask = np.zeros((org_mask.shape[0],org_mask.shape[1]),dtype=np.int64)
+            for i, v in enumerate(m_values):
+                true_mask[org_mask == v] = len(m_values)-1-i
+                # convert 255 to be assigned "0" and 0 to be assigned as "1"
+            hd = hausdorff_distance(mask, true_mask)
+            fout.write('{0} {1:8.5f} {2:8.5f} {3:8.5f} {4:8.5f} {5:8.5f} {6:8.5f}\n'.format(name,
+                    hd["mean"],hd["median"],hd["std"],hd["c95"],hd["var"],hd["max"]))
+            if config['predict']['plot']:
+                plot_img_and_mask(img, mask, true_mask, name, config['predict']['out_dir'], hd)

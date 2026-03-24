@@ -116,8 +116,8 @@ class HausdorffDTLoss(nn.Module):
 
         pred_dt = torch.from_numpy(self.distance_field(pred.cpu().detach().numpy())).float()
         target_dt = torch.from_numpy(self.distance_field(target.cpu().detach().numpy())).float()
-        pred_dt = pred_dt.to(device=0)
-        target_dt = target_dt.to(device=0)
+        pred_dt = pred_dt.to(device=pred.device)
+        target_dt = target_dt.to(device=target.device)
 
         pred_error = (pred - target) ** 2
         distance = pred_dt ** self.alpha + target_dt ** self.alpha
@@ -242,7 +242,7 @@ class HausdorffERLoss(nn.Module):
         else:
             eroted = torch.from_numpy(
                 self.perform_erosion(pred.cpu().detach().numpy(), target.cpu().detach().numpy(), debug)
-            ).float()
+            ).float().to(device=pred.device)
 
             loss = eroted.mean()
 
