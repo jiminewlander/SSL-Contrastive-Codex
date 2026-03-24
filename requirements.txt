@@ -1,0 +1,12 @@
+torch
+torchvision
+PyYAML
+tensorboard
+kornia
+tqdm
+einops
+Pillow
+opencv-python
+scipy
+numpy
+matplotlib

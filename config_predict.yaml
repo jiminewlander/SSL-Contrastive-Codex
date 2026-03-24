@@ -1,0 +1,25 @@
+backbone_arch: resnet18
+# options: resnet18, resnet34, resnet50
+pretrain_dir: None
+# Example after FCN training:
+# pretrain_dir: 'runs/fcn_20240306-085000'
+# Specify a folder containing a pre-trained model to fine-tune. If training from scratch, pass None.
+pretrain_epoch: None
+# Example: pretrain_epoch: '81'
+# Specify epoch from a pre-trained model
+downstream_arch: 'fcn8s'
+# options are 'fcns', 'fcn8s', 'fcn16s', or 'fcn32s'
+
+image:
+  sizeH: 82
+  sizeW: 100
+  n_class: 1
+  dir: 'data/predict/imgs'
+  mask_dir: 'data/predict/masks'
+  mask_suffix: '_mask'
+  mask_values: [0, 1]
+
+predict:
+  out_threshold: 0.5
+  out_dir: 'outputs/predict'
+  plot: False 
