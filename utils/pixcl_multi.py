@@ -18,6 +18,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
 from shutil import copyfile
 from datetime import datetime
+from tqdm import tqdm
 import torchvision
 from utils.distributed import reduce_mean, unwrap_module
 from utils.runtime import resolve_num_workers, should_pin_memory
@@ -330,7 +331,15 @@ class BYOLTrainer():
                 train_sampler.set_epoch(epoch_counter)
             lr_epoch = 0
             loss_epoch = 0
-            for batch in train_loader:
+            progress = tqdm(
+                train_loader,
+                total=len(train_loader),
+                desc=f'BYOL {epoch_counter + 1}/{self.max_epochs}',
+                unit='batch',
+                disable=not self.is_main_process,
+                leave=False,
+            )
+            for batch in progress:
                 image0 = batch['image']
                 # Keep custom augmentations on CPU. On Apple Silicon, many small
                 # tensor ops inside WrapHW are substantially slower on MPS than
@@ -389,6 +398,8 @@ class BYOLTrainer():
                 lr_epoch += self.optimizer.param_groups[0]['lr']
                 update_moving_average(self.target_ema_updater, self.target_encoder, self.online_encoder)
                 update_moving_average(self.target_ema_updater, self.target_projector, self.online_projector)
+                if self.is_main_process:
+                    progress.set_postfix(loss=f'{loss.item():.4f}')
                 niter += 1
 
             loss_epoch /= len(train_loader)
@@ -530,7 +541,15 @@ class PixclLearner():
                 train_sampler.set_epoch(epoch_counter)
             loss_epoch = 0
             lr_epoch = 0
-            for batch in train_loader:
+            progress = tqdm(
+                train_loader,
+                total=len(train_loader),
+                desc=f'PIXCL {epoch_counter + 1}/{self.max_epochs}',
+                unit='batch',
+                disable=not self.is_main_process,
+                leave=False,
+            )
+            for batch in progress:
                 image0 = batch['image']
 
                 # data augmentation to generate two views from the original image
@@ -654,6 +673,8 @@ class PixclLearner():
                 update_moving_average(self.target_ema_updater, self.target_pixel_projector, self.online_pixel_projector)
                 loss_epoch += loss.detach()
                 lr_epoch += self.optimizer.param_groups[0]['lr']
+                if self.is_main_process:
+                    progress.set_postfix(loss=f'{loss.item():.4f}')
                 niter += 1
 
             loss_epoch /= len(train_loader)

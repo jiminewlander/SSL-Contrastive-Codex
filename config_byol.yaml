@@ -21,7 +21,7 @@ learner:
   # exponential moving average decay of target encoder
   batch_size: 40 
   # On the tested M1 CPU-only path, larger batches did not materially improve throughput.
-  max_epochs: 20 
+  max_epochs: 3 
   num_workers: None
   # Apple Silicon defaults to 0 workers automatically when MPS is unavailable.
 
