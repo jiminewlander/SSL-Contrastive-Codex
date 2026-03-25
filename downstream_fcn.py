@@ -177,6 +177,9 @@ def main():
             resnet = torchvision.models.resnet50()
         else:
             raise ValueError(f"Unsupported backbone_arch: {config['backbone_arch']}")
+        # The FCN decoder uses intermediate backbone feature maps, not the
+        # classification head, so drop the unused fc parameters.
+        resnet.fc = torch.nn.Identity()
 
         backbone = NetWrapperMultiLayers(net=resnet).to(device)
         with torch.no_grad():

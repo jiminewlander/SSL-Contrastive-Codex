@@ -75,6 +75,9 @@ def main():
             resnet = torchvision.models.resnet50()
         else:
             raise ValueError(f"Unsupported backbone_arch: {config['backbone_arch']}")
+        # The classifier head is unused for SSL pretraining and only causes
+        # DDP to track parameters that never receive gradients.
+        resnet.fc = torch.nn.Identity()
 
         online_encoder = NetWrapperMultiLayers(net=resnet).to(device)
 

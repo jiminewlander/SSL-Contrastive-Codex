@@ -73,6 +73,9 @@ def main():
             resnet = torchvision.models.resnet50()
         else:
             raise ValueError(f"Unsupported backbone_arch: {config['backbone_arch']}")
+        # The classifier head is never used by the SSL objective. Removing it
+        # avoids DDP tracking permanently-unused parameters from the ResNet fc.
+        resnet.fc = torch.nn.Identity()
 
         online_encoder = NetWrapperMultiLayers(net=resnet).to(device)
 
