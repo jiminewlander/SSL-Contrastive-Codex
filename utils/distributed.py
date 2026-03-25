@@ -75,5 +75,16 @@ def reduce_mean(value, distributed: DistributedContext) -> torch.Tensor:
     return reduced
 
 
+def reduce_sum(value, distributed: DistributedContext) -> torch.Tensor:
+    if not torch.is_tensor(value):
+        device = distributed.device or torch.device("cpu")
+        value = torch.tensor(value, device=device)
+
+    reduced = value.detach().clone()
+    if distributed.enabled:
+        dist.all_reduce(reduced, op=dist.ReduceOp.SUM)
+    return reduced
+
+
 def unwrap_module(module):
     return module.module if hasattr(module, "module") else module
