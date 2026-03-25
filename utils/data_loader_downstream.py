@@ -1,10 +1,12 @@
 """
    the latest update in November 2023 by Yi-Jiun Su
 """
+from io import BytesIO
 import logging
 import numpy as np
+import time
 import torch
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 from functools import lru_cache
 from functools import partial
 """
@@ -39,10 +41,19 @@ def load_image(filename, channels):
     elif ext in ['.pt', '.pth']:
         return Image.fromarray(torch.load(filename).numpy())
     else:
-        with Image.open(filename) as img:
-            if channels == 3:
-                return img.convert("RGB")
-            return img.copy()
+        for attempt in range(3):
+            try:
+                with open(filename, "rb") as handle:
+                    payload = handle.read()
+                with Image.open(BytesIO(payload)) as img:
+                    img.load()
+                    if channels == 3:
+                        return img.convert("RGB")
+                    return img.copy()
+            except (UnidentifiedImageError, OSError):
+                if attempt == 2:
+                    raise
+                time.sleep(0.1 * (attempt + 1))
 
 def unique_mask_values(idx, mask_dir, mask_suffix, channels):
     mask_file = list(mask_dir.glob(idx + mask_suffix + '.*'))[0]

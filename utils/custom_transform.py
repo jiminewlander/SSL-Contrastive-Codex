@@ -10,6 +10,7 @@
 """
 import torch
 import numpy as np
+import torch.nn.functional as F
 
 class FFT(object):
     """
@@ -95,21 +96,67 @@ class WrapHW(object):
         self.rmn = rmn
         self.rmx = rmx
 
-    def __call__(self, x):
-        ww = WindowWrap1D(rmn=self.rmn, rmx=self.rmx)
-        s = x.shape[self.dim]*2
+    def _warp_positions(self, num_rows, length, device, dtype):
+        """
+        Build a batched monotonic 1D warp with piecewise-linear segments.
 
+        The previous implementation iterated row by row in Python and applied
+        shrink/expand windows independently. This version keeps the same basic
+        effect, local non-uniform warping along one axis, but generates the
+        mapping for all rows at once so it can run efficiently on accelerators.
+        """
+        if length <= 1:
+            return torch.zeros((num_rows, length), device=device, dtype=dtype)
+
+        # More segments means more local variation; keep the count bounded so
+        # the augmentation stays cheap even for large batches.
+        segment_count = int(round(1.0 / max(self.rmx, 0.05)))
+        segment_count = max(4, min(segment_count, 16, length - 1))
+
+        base = torch.linspace(0.0, 1.0, length, device=device, dtype=dtype)
+        segment_ids = torch.clamp((base * segment_count).long(), max=segment_count - 1)
+        local_pos = base * segment_count - segment_ids.to(dtype)
+
+        # Randomly stretch or compress each segment, then renormalize so the
+        # full mapping still spans the original axis from 0 to 1.
+        stretch = max(self.rmx * 3.0, self.rmn, 0.1)
+        segment_weights = 1.0 + (2.0 * torch.rand(num_rows, segment_count, device=device, dtype=dtype) - 1.0) * stretch
+        segment_weights = segment_weights.clamp_min(0.05)
+        segment_weights = segment_weights / segment_weights.sum(dim=1, keepdim=True)
+
+        control_points = torch.cat(
+            [
+                torch.zeros(num_rows, 1, device=device, dtype=dtype),
+                torch.cumsum(segment_weights, dim=1),
+            ],
+            dim=1,
+        )
+
+        gather_ids = segment_ids.unsqueeze(0).expand(num_rows, -1)
+        src0 = control_points.gather(1, gather_ids)
+        src1 = control_points.gather(1, gather_ids + 1)
+        source = src0 + (src1 - src0) * local_pos.unsqueeze(0)
+        return source.mul(2.0).sub(1.0)
+
+    def __call__(self, x):
         if self.dim != 3:
             x = x.permute(0,1,3,2)
-        x2 = torch.nn.functional.interpolate(x, size=[x.shape[2],s])
 
-        for B in range(x2.shape[0]):
-            for C in range(x2.shape[1]):
-                for i in range(x2.shape[2]):
-                    x2[B,C,i,:] = ww(x2[B,C,i,:])
-#                    x2[B,C,i,:] = torch.from_numpy(ww(x2[B,C,i,:].numpy()))
+        bsz, channels, height, width = x.shape
+        flat = x.permute(0, 2, 1, 3).reshape(bsz * height, channels, 1, width)
+        source_x = self._warp_positions(bsz * height, width, x.device, x.dtype)
+        source_y = torch.zeros_like(source_x)
+        grid = torch.stack((source_x, source_y), dim=-1).unsqueeze(1)
 
-        x = torch.nn.functional.interpolate(x2, size=[x.shape[2],x.shape[3]])
+        warped = F.grid_sample(
+            flat,
+            grid,
+            mode='bilinear',
+            padding_mode='border',
+            align_corners=True,
+        )
+        x = warped.reshape(bsz, height, channels, width).permute(0, 2, 1, 3)
+
         if self.dim !=3:
             x = x.permute(0,1,3,2)
 

@@ -1,7 +1,9 @@
 """
    The latest update in October 2023 by Yi-Jiun Su
 """
-from PIL import Image
+from io import BytesIO
+import time
+from PIL import Image, UnidentifiedImageError
 from pathlib import Path
 from os import listdir
 from os.path import splitext, isfile, join
@@ -9,13 +11,22 @@ import logging
 from torchvision import transforms
 from torch.utils.data import Dataset
 
-def load_image(filename, channels): 
-    # Explicitly close the source file so DataLoader workers do not keep many
-    # PNG handles alive on macOS while PIL is still decoding them.
-    with Image.open(filename) as img:
-        if channels == 3:
-            return img.convert("RGB")
-        return img.copy()
+def load_image(filename, channels):
+    # Decode from in-memory bytes and retry transient PIL parse failures. This
+    # is more stable than repeatedly handing filesystem paths to PIL on macOS.
+    for attempt in range(3):
+        try:
+            with open(filename, "rb") as handle:
+                payload = handle.read()
+            with Image.open(BytesIO(payload)) as img:
+                img.load()
+                if channels == 3:
+                    return img.convert("RGB")
+                return img.copy()
+        except (UnidentifiedImageError, OSError):
+            if attempt == 2:
+                raise
+            time.sleep(0.1 * (attempt + 1))
 
 class CustomDataset(Dataset):
     """

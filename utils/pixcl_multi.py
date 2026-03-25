@@ -14,10 +14,12 @@ import random
 from einops import rearrange
 import os
 from torch.utils.data.dataloader import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
 from shutil import copyfile
 from datetime import datetime
 import torchvision
+from utils.distributed import reduce_mean, unwrap_module
 from utils.runtime import resolve_num_workers, should_pin_memory
 
 def _create_model_training_folder(writer, files_to_same):
@@ -297,27 +299,47 @@ class BYOLTrainer():
         self.max_epochs = params['max_epochs']
         self.num_workers = resolve_num_workers(params['num_workers'])
         self.pdict = nn.PairwiseDistance(p=2.0)
-        self.writer = SummaryWriter(log_dir=os.path.join('runs','byol_'+datetime.now().strftime("%Y%m%d-%H%M%S")))
-        _create_model_training_folder(self.writer, files_to_same=["./config_byol.yaml","./train_byol.py","./utils/pixcl_multi.py"])
+        self.distributed = params.get('distributed')
+        self.is_main_process = self.distributed is None or self.distributed.is_main_process
+        self.writer = None
+        if self.is_main_process:
+            self.writer = SummaryWriter(log_dir=os.path.join('runs','byol_'+datetime.now().strftime("%Y%m%d-%H%M%S")))
+            _create_model_training_folder(self.writer, files_to_same=["./config_byol.yaml","./train_byol.py","./utils/pixcl_multi.py"])
 
     def train(self, train_dataset):
-        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, 
-                num_workers=self.num_workers, drop_last=False, shuffle=True,
-                pin_memory=should_pin_memory(self.device))
+        train_sampler = None
+        if self.distributed is not None and self.distributed.enabled:
+            train_sampler = DistributedSampler(
+                train_dataset,
+                num_replicas=self.distributed.world_size,
+                rank=self.distributed.rank,
+                shuffle=True,
+                drop_last=False,
+            )
+
+        train_loader = DataLoader(train_dataset, batch_size=self.batch_size,
+                num_workers=self.num_workers, drop_last=False, shuffle=train_sampler is None,
+                sampler=train_sampler, pin_memory=should_pin_memory(self.device))
         niter = 0
-        model_checkpoints_folder = os.path.join(self.writer.log_dir, 'checkpoints')
+        model_checkpoints_folder = None
+        if self.writer is not None:
+            model_checkpoints_folder = os.path.join(self.writer.log_dir, 'checkpoints')
 
         for epoch_counter in range(self.max_epochs):
+            if train_sampler is not None:
+                train_sampler.set_epoch(epoch_counter)
             lr_epoch = 0
             loss_epoch = 0
             for batch in train_loader:
                 image0 = batch['image']
-                image0 = image0.to(self.device)
+                # Keep custom augmentations on CPU. On Apple Silicon, many small
+                # tensor ops inside WrapHW are substantially slower on MPS than
+                # running the transform on CPU and transferring the result once.
                 image1, image2 = self.augment1(image0), self.augment2(image0)
                 image1 = image1.to(self.device)
                 image2 = image2.to(self.device)
 
-                if niter == 0:
+                if self.writer is not None and niter == 0:
                     grid = torchvision.utils.make_grid(image0[:32])
                     self.writer.add_image('image0', grid, global_step=niter)
                     grid = torchvision.utils.make_grid(image1[:32])
@@ -352,15 +374,18 @@ class BYOLTrainer():
                 d = (d12 + d21).mean()
                 a = (a12 + a21).mean()
                 loss =  d + a*self.alpha
-                self.alpha = d.item()/a.item()
+                d_global = reduce_mean(d, self.distributed) if self.distributed is not None else d.detach()
+                a_global = reduce_mean(a, self.distributed) if self.distributed is not None else a.detach()
+                self.alpha = d_global.item() / max(a_global.item(), 1e-6)
 
                 self.optimizer.zero_grad()
                 loss.backward()
-                self.writer.add_scalar('total loss', loss, global_step=niter)
-                self.writer.add_scalar('distance loss', d, global_step=niter)
-                self.writer.add_scalar('angle loss', a, global_step=niter)
+                if self.writer is not None:
+                    self.writer.add_scalar('total loss', loss, global_step=niter)
+                    self.writer.add_scalar('distance loss', d, global_step=niter)
+                    self.writer.add_scalar('angle loss', a, global_step=niter)
                 self.optimizer.step()
-                loss_epoch += loss
+                loss_epoch += loss.detach()
                 lr_epoch += self.optimizer.param_groups[0]['lr']
                 update_moving_average(self.target_ema_updater, self.target_encoder, self.online_encoder)
                 update_moving_average(self.target_ema_updater, self.target_projector, self.online_projector)
@@ -368,16 +393,18 @@ class BYOLTrainer():
 
             loss_epoch /= len(train_loader)
             lr_epoch /= len(train_loader)
-            self.scheduler.step(loss_epoch)
-            self.writer.add_scalar('epoch loss', loss_epoch, global_step=epoch_counter+1)
-            self.writer.add_scalar('epoch learing rate', lr_epoch, global_step=epoch_counter+1)
-            torch.save({
-                'online_encoder_state_dict': self.online_encoder.state_dict(),
-                'online_projector_state_dict': self.online_projector.state_dict(),
-                'online_predictor_state_dict': self.online_predictor.state_dict(),
-                'optimizer_state_dict': self.optimizer.state_dict(),
-            },(os.path.join(model_checkpoints_folder, 'model_epoch'+str(epoch_counter+1)+'.pth')))
-            print("End of epoch {}".format(epoch_counter+1))
+            loss_epoch_reduced = reduce_mean(loss_epoch, self.distributed) if self.distributed is not None else loss_epoch.detach()
+            self.scheduler.step(loss_epoch_reduced.item())
+            if self.writer is not None:
+                self.writer.add_scalar('epoch loss', loss_epoch_reduced, global_step=epoch_counter+1)
+                self.writer.add_scalar('epoch learing rate', lr_epoch, global_step=epoch_counter+1)
+                torch.save({
+                    'online_encoder_state_dict': unwrap_module(self.online_encoder).state_dict(),
+                    'online_projector_state_dict': unwrap_module(self.online_projector).state_dict(),
+                    'online_predictor_state_dict': unwrap_module(self.online_predictor).state_dict(),
+                    'optimizer_state_dict': self.optimizer.state_dict(),
+                },(os.path.join(model_checkpoints_folder, 'model_epoch'+str(epoch_counter+1)+'.pth')))
+                print("End of epoch {}".format(epoch_counter+1))
 
 class PixclLearner():
     def __init__(
@@ -426,23 +453,85 @@ class PixclLearner():
         self.max_epochs = params['max_epochs']
         self.pdict = nn.PairwiseDistance(p=2.0)
         self.num_workers = resolve_num_workers(params['num_workers'])
-        self.writer = SummaryWriter(log_dir=os.path.join('runs','pixcl_'+datetime.now().strftime("%Y%m%d-%H%M%S")))
-        _create_model_training_folder(self.writer, files_to_same=["./config_pixcl.yaml","./train_pixcl.py","./utils/pixcl_multi.py"])
+        self.distributed = params.get('distributed')
+        self.is_main_process = self.distributed is None or self.distributed.is_main_process
+        self.writer = None
+        if self.is_main_process:
+            self.writer = SummaryWriter(log_dir=os.path.join('runs','pixcl_'+datetime.now().strftime("%Y%m%d-%H%M%S")))
+            _create_model_training_folder(self.writer, files_to_same=["./config_pixcl.yaml","./train_pixcl.py","./utils/pixcl_multi.py"])
+        # Cache the normalized coordinate grid because image and projection
+        # shapes stay constant across batches for a given run.
+        self._coordinate_template_cache = {}
+
+    def _get_coordinate_template(self, image_shape, proj_shape, device, dtype):
+        cache_key = (image_shape, proj_shape, device.type, str(dtype))
+        cached = self._coordinate_template_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        image_h, image_w = image_shape
+        proj_image_h, proj_image_w = proj_shape
+        coordinates = torch.meshgrid(
+            torch.arange(image_h, device=device, dtype=dtype),
+            torch.arange(image_w, device=device, dtype=dtype),
+            indexing='ij',
+        )
+        coordinates = torch.stack(coordinates).unsqueeze(0)
+        coordinates /= sqrt(image_h ** 2 + image_w ** 2)
+        coordinates[:, 0] *= proj_image_h
+        coordinates[:, 1] *= proj_image_w
+        self._coordinate_template_cache[cache_key] = coordinates
+        return coordinates
+
+    def _positive_masks(self, coordinate_template, cutout_coordinates_one, cutout_coordinates_two, proj_shape):
+        proj_coors_one = cutout_and_resize(
+            coordinate_template,
+            cutout_coordinates_one,
+            output_size=proj_shape,
+            mode=self.coord_cutout_interpolate_mode,
+        )
+        proj_coors_two = cutout_and_resize(
+            coordinate_template,
+            cutout_coordinates_two,
+            output_size=proj_shape,
+            mode=self.coord_cutout_interpolate_mode,
+        )
+
+        proj_coors_one = rearrange(proj_coors_one, 'b c h w -> b (h w) c')
+        proj_coors_two = rearrange(proj_coors_two, 'b c h w -> b (h w) c')
+        # `cdist` avoids explicitly expanding every pixel pair into a flattened
+        # `(num_pixels * num_pixels, 2)` tensor before measuring distances.
+        distance_matrix = torch.cdist(proj_coors_one, proj_coors_two, p=2).squeeze(0)
+        positive_mask_one_two = (distance_matrix < self.distance_thres).to(self.device)
+        return positive_mask_one_two, positive_mask_one_two.t()
 
     def train(self, train_dataset):
-        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, 
-                num_workers=self.num_workers, drop_last=False, shuffle=True,
-                pin_memory=should_pin_memory(self.device))
+        train_sampler = None
+        if self.distributed is not None and self.distributed.enabled:
+            train_sampler = DistributedSampler(
+                train_dataset,
+                num_replicas=self.distributed.world_size,
+                rank=self.distributed.rank,
+                shuffle=True,
+                drop_last=False,
+            )
+
+        train_loader = DataLoader(train_dataset, batch_size=self.batch_size,
+                num_workers=self.num_workers, drop_last=False, shuffle=train_sampler is None,
+                sampler=train_sampler, pin_memory=should_pin_memory(self.device))
 
         niter = 0
-        model_checkpoints_folder = os.path.join(self.writer.log_dir, 'checkpoints')
+        model_checkpoints_folder = None
+        if self.writer is not None:
+            model_checkpoints_folder = os.path.join(self.writer.log_dir, 'checkpoints')
 
         for epoch_counter in range(self.max_epochs):
+            if train_sampler is not None:
+                train_sampler.set_epoch(epoch_counter)
             loss_epoch = 0
             lr_epoch = 0
             for batch in train_loader:
                 image0 = batch['image']
-                image0 = image0.to(self.device)
 
                 # data augmentation to generate two views from the original image
                 cutout_coordinates_one, _ = cutout_coordinateW(image0, self.cutout_ratio_range)
@@ -455,7 +544,7 @@ class PixclLearner():
                 image1_cutout = image1_cutout.to(self.device)
                 image2_cutout = image2_cutout.to(self.device)
 
-                if niter == 0:
+                if self.writer is not None and niter == 0:
                     grid = torchvision.utils.make_grid(image0[:32])
                     self.writer.add_image('image0', grid, global_step=niter)
 
@@ -479,42 +568,19 @@ class PixclLearner():
                 proj_instance2 = self.online_instance_projector(instance2)
                 proj_pixel2 = self.online_pixel_projector(pixel2)
 
-                image_h, image_w = image0.shape[2:]
-
                 proj_image_shape = proj_pixel1.shape[2:]
-                proj_image_h, proj_image_w = proj_image_shape
-
-                coordinates = torch.meshgrid(
-                    torch.arange(image_h, device = image0.device),
-                    torch.arange(image_w, device = image0.device), 
-                    indexing='ij')
-
-                coordinates = torch.stack(coordinates).unsqueeze(0).float()
-                coordinates /= sqrt(image_h ** 2 + image_w ** 2)
-                coordinates[:, 0] *= proj_image_h
-                coordinates[:, 1] *= proj_image_w
-
-                proj_coors_one = cutout_and_resize(coordinates, cutout_coordinates_one, output_size = proj_image_shape, mode = self.coord_cutout_interpolate_mode)
-                proj_coors_two = cutout_and_resize(coordinates, cutout_coordinates_two, output_size = proj_image_shape, mode = self.coord_cutout_interpolate_mode)
-                # proj_coors_xxx [1, 2,image_h,image_w]
-
-                proj_coors_one, proj_coors_two = map(lambda t: rearrange(t, 'b c h w -> (b h w) c'), (proj_coors_one, proj_coors_two))
-                # proj_coorx_xxx [image_h*image_w, 2]
-                pdist = nn.PairwiseDistance(p = 2)
-
-                num_pixels = proj_coors_one.shape[0]
-
-                proj_coors_one_expanded = proj_coors_one[:, None].expand(num_pixels, num_pixels, -1).reshape(num_pixels * num_pixels, 2)
-                proj_coors_two_expanded = proj_coors_two[None, :].expand(num_pixels, num_pixels, -1).reshape(num_pixels * num_pixels, 2)
-                #proj_coors_xxx_expanded [(image_h*image_w)*(image_h*image_w), 2]
-
-                distance_matrix = pdist(proj_coors_one_expanded, proj_coors_two_expanded)
-                # distance_matrix [(image_h*image_w)*(image_h*image_w)]
-                distance_matrix = distance_matrix.reshape(num_pixels, num_pixels)
-                # distance_matrix [image_h*image_w, image_h*image_w]
-
-                positive_mask_one_two = distance_matrix < self.distance_thres
-                positive_mask_two_one = positive_mask_one_two.t()
+                coordinate_template = self._get_coordinate_template(
+                    image_shape=image0.shape[2:],
+                    proj_shape=proj_image_shape,
+                    device=image0.device,
+                    dtype=image0.dtype,
+                )
+                positive_mask_one_two, positive_mask_two_one = self._positive_masks(
+                    coordinate_template,
+                    cutout_coordinates_one,
+                    cutout_coordinates_two,
+                    proj_image_shape,
+                )
 
                 # applied target_encoder to output two layers (c6 & c5)
                 # obtain target projectors on the two layers
@@ -530,9 +596,6 @@ class PixclLearner():
                 flatten = lambda t: rearrange(t, 'b c h w -> b c (h w)')
                 target_proj_pixel1, target_proj_pixel2 = list(map(flatten, (target_proj_pixel1, target_proj_pixel2)))
                 # target_proj_pixel_xxx [B, projection_size, 3x4]
-
-                # get total number of positive pixel pairs
-                positive_pixel_pairs = positive_mask_one_two.sum()
 
                 # applied online_predictor on the instance projection
                 # get instance level loss
@@ -551,7 +614,9 @@ class PixclLearner():
                 d = (d12 + d21).mean()
                 a = (a12 + a21).mean()
                 instance_loss =  d + a*self.alpha_instance
-                self.alpha_instance = d.item()/a.item()
+                d_global = reduce_mean(d, self.distributed) if self.distributed is not None else d.detach()
+                a_global = reduce_mean(a, self.distributed) if self.distributed is not None else a.detach()
+                self.alpha_instance = d_global.item() / max(a_global.item(), 1e-6)
 
                 # applied pixel propagator on the pixel projection 
                 # calculate pix pro loss
@@ -571,34 +636,39 @@ class PixclLearner():
 
                 # total loss
                 loss = pixpro_loss*self.alpha + instance_loss
-                self.alpha = instance_loss.item()/pixpro_loss.item()
+                pixpro_global = reduce_mean(pixpro_loss, self.distributed) if self.distributed is not None else pixpro_loss.detach()
+                instance_loss_global = reduce_mean(instance_loss, self.distributed) if self.distributed is not None else instance_loss.detach()
+                self.alpha = instance_loss_global.item() / max(pixpro_global.item(), 1e-6)
         
                 self.optimizer.zero_grad()
                 loss.backward()
-                self.writer.add_scalar('loss_total', loss, global_step=niter)
-                self.writer.add_scalar('loss_pixpro', pixpro_loss, global_step=niter)
-                self.writer.add_scalar('loss_instance', instance_loss, global_step=niter)
-                self.writer.add_scalar('loss_dist', d, global_step=niter)
-                self.writer.add_scalar('loss_angle', a, global_step=niter)
+                if self.writer is not None:
+                    self.writer.add_scalar('loss_total', loss, global_step=niter)
+                    self.writer.add_scalar('loss_pixpro', pixpro_loss, global_step=niter)
+                    self.writer.add_scalar('loss_instance', instance_loss, global_step=niter)
+                    self.writer.add_scalar('loss_dist', d, global_step=niter)
+                    self.writer.add_scalar('loss_angle', a, global_step=niter)
                 self.optimizer.step()
                 update_moving_average(self.target_ema_updater, self.target_encoder, self.online_encoder)
                 update_moving_average(self.target_ema_updater, self.target_instance_projector, self.online_instance_projector)
                 update_moving_average(self.target_ema_updater, self.target_pixel_projector, self.online_pixel_projector)
-                loss_epoch += loss
+                loss_epoch += loss.detach()
                 lr_epoch += self.optimizer.param_groups[0]['lr']
                 niter += 1
 
             loss_epoch /= len(train_loader)
             lr_epoch /= len(train_loader)
-            self.scheduler.step(loss_epoch)
-            self.writer.add_scalar('epoch loss', loss_epoch, global_step=epoch_counter+1)
-            self.writer.add_scalar('epoch learning rate', lr_epoch, global_step=epoch_counter+1)
-            torch.save({
-                'online_encoder_state_dict': self.online_encoder.state_dict(),
-                'online_instance_projector_state_dict': self.online_instance_projector.state_dict(),
-                'online_pixel_projector_state_dict': self.online_pixel_projector.state_dict(),
-                'propagate_pixels_state_dict': self.propagate_pixels.state_dict(),
-                'online_predictor_state_dict': self.online_predictor.state_dict(),
-                'optimizer_state_dict': self.optimizer.state_dict(),
-            },(os.path.join(model_checkpoints_folder, 'model_epoch'+str(epoch_counter+1)+'.pth')))
-            print("End of epoch {}".format(epoch_counter+1))
+            loss_epoch_reduced = reduce_mean(loss_epoch, self.distributed) if self.distributed is not None else loss_epoch.detach()
+            self.scheduler.step(loss_epoch_reduced.item())
+            if self.writer is not None:
+                self.writer.add_scalar('epoch loss', loss_epoch_reduced, global_step=epoch_counter+1)
+                self.writer.add_scalar('epoch learning rate', lr_epoch, global_step=epoch_counter+1)
+                torch.save({
+                    'online_encoder_state_dict': unwrap_module(self.online_encoder).state_dict(),
+                    'online_instance_projector_state_dict': unwrap_module(self.online_instance_projector).state_dict(),
+                    'online_pixel_projector_state_dict': unwrap_module(self.online_pixel_projector).state_dict(),
+                    'propagate_pixels_state_dict': unwrap_module(self.propagate_pixels).state_dict(),
+                    'online_predictor_state_dict': unwrap_module(self.online_predictor).state_dict(),
+                    'optimizer_state_dict': self.optimizer.state_dict(),
+                },(os.path.join(model_checkpoints_folder, 'model_epoch'+str(epoch_counter+1)+'.pth')))
+                print("End of epoch {}".format(epoch_counter+1))

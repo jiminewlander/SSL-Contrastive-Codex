@@ -111,6 +111,22 @@ python predict_fcn.py
 
 TensorBoard logs and checkpoints are written under `runs/`.
 
+## Multi-GPU BYOL
+
+`train_byol.py` now supports single-node multi-GPU training with `torchrun` on CUDA.
+
+Example launch on one 4-GPU node:
+
+```bash
+torchrun --standalone --nproc_per_node=4 train_byol.py
+```
+
+Notes:
+
+* this path currently supports CUDA only, not MPS or CPU
+* `learner.batch_size` in `config_byol.yaml` is the per-process batch size, so the effective global batch size is `batch_size * number_of_processes`
+* TensorBoard logs and checkpoints are written only by rank 0
+
 ## Apple Silicon notes
 
 The training and prediction scripts now choose the best available backend automatically:
