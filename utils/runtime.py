@@ -71,16 +71,22 @@ def warn_if_apple_silicon_mps_unavailable(device: torch.device) -> None:
 
 def resolve_num_workers(value) -> int:
     """
-    Use a conservative default on macOS, where PIL-based loading with spawned
-    workers is often less stable than a single-process loader.
+    Use conservative defaults for PIL-heavy loading. On macOS we stay single
+    process by default. On Linux, cap workers per rank so distributed launches
+    do not exhaust file descriptors or process limits.
     """
     if value not in (None, "", "None", "none", "null", "Null"):
         return int(value)
 
     cpu_count = os.cpu_count() or 1
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
     if platform.system() == "Darwin":
         return 0
-    return cpu_count
+
+    per_rank_cpu = max(1, cpu_count // max(world_size, 1))
+    if world_size > 1:
+        return min(4, per_rank_cpu)
+    return min(8, per_rank_cpu)
 
 
 def should_pin_memory(device: torch.device) -> bool:
