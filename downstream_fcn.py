@@ -11,11 +11,11 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset, random_split
 from torch.utils.data.distributed import DistributedSampler
-from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 import torchvision
 import yaml
 from kornia.losses import BinaryFocalLossWithLogits
+import warnings
 
 from utils.data_loader_downstream import CustomDataset
 from utils.dice_score import focal_tversky_loss
@@ -40,6 +40,11 @@ from utils.runtime import (
     warn_if_apple_silicon_mps_unavailable,
 )
 
+try:
+    from torch.utils.tensorboard import SummaryWriter
+except Exception:
+    SummaryWriter = None
+
 
 def normalize_optional(value):
     if value in (None, "", "None", "none", "null", "Null"):
@@ -47,8 +52,8 @@ def normalize_optional(value):
     return value
 
 
-def _create_model_training_folder(writer, files_to_same):
-    model_checkpoints_folder = os.path.join(writer.log_dir, "checkpoints")
+def _create_model_training_folder(log_dir, files_to_same):
+    model_checkpoints_folder = os.path.join(log_dir, "checkpoints")
     if not os.path.exists(model_checkpoints_folder):
         os.makedirs(model_checkpoints_folder)
         for file in files_to_same:
@@ -241,10 +246,19 @@ def main():
 
         writer = None
         model_checkpoints_folder = None
+        log_dir = None
         if distributed.is_main_process:
-            writer = SummaryWriter(log_dir=os.path.join("runs", "fcn_" + datetime.now().strftime("%Y%m%d-%H%M%S")))
-            _create_model_training_folder(writer, files_to_same=["./config_fcn.yaml", "./downstream_fcn.py"])
-            model_checkpoints_folder = os.path.join(writer.log_dir, "checkpoints")
+            log_dir = os.path.join("runs", "fcn_" + datetime.now().strftime("%Y%m%d-%H%M%S"))
+            _create_model_training_folder(log_dir, files_to_same=["./config_fcn.yaml", "./downstream_fcn.py"])
+            model_checkpoints_folder = os.path.join(log_dir, "checkpoints")
+            if SummaryWriter is None:
+                warnings.warn(
+                    "TensorBoard SummaryWriter is unavailable in this environment. "
+                    "Continuing without TensorBoard logs.",
+                    RuntimeWarning,
+                )
+            else:
+                writer = SummaryWriter(log_dir=log_dir)
 
         scaler = grad_scaler(device)
         global_step = 0
@@ -322,8 +336,9 @@ def main():
 
             epoch_loss /= max(len(train_loader), 1)
             epoch_loss_reduced = reduce_mean(epoch_loss, distributed)
-            if writer is not None:
-                writer.add_scalar("epoch loss", epoch_loss_reduced.item(), global_step=epoch_counter)
+            if distributed.is_main_process:
+                if writer is not None:
+                    writer.add_scalar("epoch loss", epoch_loss_reduced.item(), global_step=epoch_counter)
                 torch.save(
                     {
                         "fcn_state_dict": unwrap_module(fcn).state_dict(),

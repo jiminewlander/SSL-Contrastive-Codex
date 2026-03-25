@@ -13,9 +13,9 @@ from copy import deepcopy
 import random
 from einops import rearrange
 import os
+import warnings
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.distributed import DistributedSampler
-from torch.utils.tensorboard import SummaryWriter
 from shutil import copyfile
 from datetime import datetime
 from tqdm import tqdm
@@ -23,8 +23,13 @@ import torchvision
 from utils.distributed import reduce_mean, unwrap_module
 from utils.runtime import resolve_num_workers, should_pin_memory
 
-def _create_model_training_folder(writer, files_to_same):
-    model_checkpoints_folder = os.path.join(writer.log_dir, 'checkpoints')
+try:
+    from torch.utils.tensorboard import SummaryWriter
+except Exception:
+    SummaryWriter = None
+
+def _create_model_training_folder(log_dir, files_to_same):
+    model_checkpoints_folder = os.path.join(log_dir, 'checkpoints')
     if not os.path.exists(model_checkpoints_folder):
         os.makedirs(model_checkpoints_folder)
         for file in files_to_same:
@@ -303,9 +308,18 @@ class BYOLTrainer():
         self.distributed = params.get('distributed')
         self.is_main_process = self.distributed is None or self.distributed.is_main_process
         self.writer = None
+        self.log_dir = None
         if self.is_main_process:
-            self.writer = SummaryWriter(log_dir=os.path.join('runs','byol_'+datetime.now().strftime("%Y%m%d-%H%M%S")))
-            _create_model_training_folder(self.writer, files_to_same=["./config_byol.yaml","./train_byol.py","./utils/pixcl_multi.py"])
+            self.log_dir = os.path.join('runs','byol_'+datetime.now().strftime("%Y%m%d-%H%M%S"))
+            _create_model_training_folder(self.log_dir, files_to_same=["./config_byol.yaml","./train_byol.py","./utils/pixcl_multi.py"])
+            if SummaryWriter is None:
+                warnings.warn(
+                    "TensorBoard SummaryWriter is unavailable in this environment. "
+                    "Continuing without TensorBoard logs.",
+                    RuntimeWarning,
+                )
+            else:
+                self.writer = SummaryWriter(log_dir=self.log_dir)
 
     def train(self, train_dataset):
         train_sampler = None
@@ -323,8 +337,8 @@ class BYOLTrainer():
                 sampler=train_sampler, pin_memory=should_pin_memory(self.device))
         niter = 0
         model_checkpoints_folder = None
-        if self.writer is not None:
-            model_checkpoints_folder = os.path.join(self.writer.log_dir, 'checkpoints')
+        if self.log_dir is not None:
+            model_checkpoints_folder = os.path.join(self.log_dir, 'checkpoints')
 
         for epoch_counter in range(self.max_epochs):
             if train_sampler is not None:
@@ -406,9 +420,10 @@ class BYOLTrainer():
             lr_epoch /= len(train_loader)
             loss_epoch_reduced = reduce_mean(loss_epoch, self.distributed) if self.distributed is not None else loss_epoch.detach()
             self.scheduler.step(loss_epoch_reduced.item())
-            if self.writer is not None:
-                self.writer.add_scalar('epoch loss', loss_epoch_reduced, global_step=epoch_counter+1)
-                self.writer.add_scalar('epoch learing rate', lr_epoch, global_step=epoch_counter+1)
+            if self.is_main_process:
+                if self.writer is not None:
+                    self.writer.add_scalar('epoch loss', loss_epoch_reduced, global_step=epoch_counter+1)
+                    self.writer.add_scalar('epoch learing rate', lr_epoch, global_step=epoch_counter+1)
                 torch.save({
                     'online_encoder_state_dict': unwrap_module(self.online_encoder).state_dict(),
                     'online_projector_state_dict': unwrap_module(self.online_projector).state_dict(),
@@ -467,9 +482,18 @@ class PixclLearner():
         self.distributed = params.get('distributed')
         self.is_main_process = self.distributed is None or self.distributed.is_main_process
         self.writer = None
+        self.log_dir = None
         if self.is_main_process:
-            self.writer = SummaryWriter(log_dir=os.path.join('runs','pixcl_'+datetime.now().strftime("%Y%m%d-%H%M%S")))
-            _create_model_training_folder(self.writer, files_to_same=["./config_pixcl.yaml","./train_pixcl.py","./utils/pixcl_multi.py"])
+            self.log_dir = os.path.join('runs','pixcl_'+datetime.now().strftime("%Y%m%d-%H%M%S"))
+            _create_model_training_folder(self.log_dir, files_to_same=["./config_pixcl.yaml","./train_pixcl.py","./utils/pixcl_multi.py"])
+            if SummaryWriter is None:
+                warnings.warn(
+                    "TensorBoard SummaryWriter is unavailable in this environment. "
+                    "Continuing without TensorBoard logs.",
+                    RuntimeWarning,
+                )
+            else:
+                self.writer = SummaryWriter(log_dir=self.log_dir)
         # Cache the normalized coordinate grid because image and projection
         # shapes stay constant across batches for a given run.
         self._coordinate_template_cache = {}
@@ -533,8 +557,8 @@ class PixclLearner():
 
         niter = 0
         model_checkpoints_folder = None
-        if self.writer is not None:
-            model_checkpoints_folder = os.path.join(self.writer.log_dir, 'checkpoints')
+        if self.log_dir is not None:
+            model_checkpoints_folder = os.path.join(self.log_dir, 'checkpoints')
 
         for epoch_counter in range(self.max_epochs):
             if train_sampler is not None:
@@ -681,9 +705,10 @@ class PixclLearner():
             lr_epoch /= len(train_loader)
             loss_epoch_reduced = reduce_mean(loss_epoch, self.distributed) if self.distributed is not None else loss_epoch.detach()
             self.scheduler.step(loss_epoch_reduced.item())
-            if self.writer is not None:
-                self.writer.add_scalar('epoch loss', loss_epoch_reduced, global_step=epoch_counter+1)
-                self.writer.add_scalar('epoch learning rate', lr_epoch, global_step=epoch_counter+1)
+            if self.is_main_process:
+                if self.writer is not None:
+                    self.writer.add_scalar('epoch loss', loss_epoch_reduced, global_step=epoch_counter+1)
+                    self.writer.add_scalar('epoch learning rate', lr_epoch, global_step=epoch_counter+1)
                 torch.save({
                     'online_encoder_state_dict': unwrap_module(self.online_encoder).state_dict(),
                     'online_instance_projector_state_dict': unwrap_module(self.online_instance_projector).state_dict(),
