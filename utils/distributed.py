@@ -67,6 +67,7 @@ def wrap_ddp(module, distributed):
         module,
         device_ids=[distributed.local_rank],
         output_device=distributed.local_rank,
+        broadcast_buffers=False,
     )
 
 
