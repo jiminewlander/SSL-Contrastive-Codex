@@ -193,39 +193,39 @@ class NetWrapperMultiLayers(nn.Module):
 
     def _register_hook(self):
         for i in range(self.num_layers):
-            match self.layer_IDs[i]:
-                case item if item in [2, -8, 'relu']:
-                    c0_layer = self._find_layer(self.layer_IDs[i])
-                    assert c0_layer is not None, f'hidden layer ({self.layer_IDs[i]}) not found'
-                    c0_layer.register_forward_hook(self._hook_c0)
-                case item if item in [3, -7, 'maxpool']:
-                    c1_layer = self._find_layer(self.layer_IDs[i])
-                    assert c1_layer is not None, f'hidden layer ({self.layer_IDs[i]}) not found'
-                    c1_layer.register_forward_hook(self._hook_c1)
-                case item if item in [4, -6, 'layer1']:
-                    c2_layer = self._find_layer(self.layer_IDs[i])
-                    assert c2_layer is not None, f'hidden layer ({self.layer_IDs[i]}) not found'
-                    c2_layer.register_forward_hook(self._hook_c2)
-                case item if item in [5, -5, 'layer2']:
-                    c3_layer = self._find_layer(self.layer_IDs[i])
-                    assert c3_layer is not None, f'hidden layer ({self.layer_IDs[i]}) not found'
-                    c3_layer.register_forward_hook(self._hook_c3)
-                case item if item in [6, -4, 'layer3']:
-                    c4_layer = self._find_layer(self.layer_IDs[i])
-                    assert c4_layer is not None, f'hidden layer ({self.layer_IDs[i]}) not found'
-                    c4_layer.register_forward_hook(self._hook_c4)
-                case item if item in [7, -3, 'layer4']:
-                    pixel_layer = self._find_layer(self.layer_IDs[i])
-                    assert pixel_layer is not None, f'hidden layer ({self.layer_IDs[i]}) not found'
-                    pixel_layer.register_forward_hook(self._hook_pixel)
-                case item if item in [8, -2, 'avgpool']:
-                    instance_layer = self._find_layer(self.layer_IDs[i])
-                    assert instance_layer is not None, f'hidden layer ({self.layer_IDs[i]}) not found'
-                    instance_layer.register_forward_hook(self._hook_instance)
-                case item if item in [0, 1, 9, -10, -9, -1, 'conv1', 'bn1', 'fc']:
-                    print(f'hidden layer ({self.layer_IDs[i]}) not specified for output')
-                case _:
-                    assert self._find_layer(self.layer_IDs[i]) is not None, f'hidden layer ({self.layer_IDs[i]}) not found'
+            layer_id = self.layer_IDs[i]
+            if layer_id in [2, -8, 'relu']:
+                c0_layer = self._find_layer(layer_id)
+                assert c0_layer is not None, f'hidden layer ({layer_id}) not found'
+                c0_layer.register_forward_hook(self._hook_c0)
+            elif layer_id in [3, -7, 'maxpool']:
+                c1_layer = self._find_layer(layer_id)
+                assert c1_layer is not None, f'hidden layer ({layer_id}) not found'
+                c1_layer.register_forward_hook(self._hook_c1)
+            elif layer_id in [4, -6, 'layer1']:
+                c2_layer = self._find_layer(layer_id)
+                assert c2_layer is not None, f'hidden layer ({layer_id}) not found'
+                c2_layer.register_forward_hook(self._hook_c2)
+            elif layer_id in [5, -5, 'layer2']:
+                c3_layer = self._find_layer(layer_id)
+                assert c3_layer is not None, f'hidden layer ({layer_id}) not found'
+                c3_layer.register_forward_hook(self._hook_c3)
+            elif layer_id in [6, -4, 'layer3']:
+                c4_layer = self._find_layer(layer_id)
+                assert c4_layer is not None, f'hidden layer ({layer_id}) not found'
+                c4_layer.register_forward_hook(self._hook_c4)
+            elif layer_id in [7, -3, 'layer4']:
+                pixel_layer = self._find_layer(layer_id)
+                assert pixel_layer is not None, f'hidden layer ({layer_id}) not found'
+                pixel_layer.register_forward_hook(self._hook_pixel)
+            elif layer_id in [8, -2, 'avgpool']:
+                instance_layer = self._find_layer(layer_id)
+                assert instance_layer is not None, f'hidden layer ({layer_id}) not found'
+                instance_layer.register_forward_hook(self._hook_instance)
+            elif layer_id in [0, 1, 9, -10, -9, -1, 'conv1', 'bn1', 'fc']:
+                print(f'hidden layer ({layer_id}) not specified for output')
+            else:
+                assert self._find_layer(layer_id) is not None, f'hidden layer ({layer_id}) not found'
         self.hook_registered = True
 
     def get_representation_multi(self, x):

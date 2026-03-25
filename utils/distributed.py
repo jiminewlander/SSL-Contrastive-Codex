@@ -1,7 +1,6 @@
 """
 Helpers for optional torch.distributed setup.
 """
-from dataclasses import dataclass
 import os
 
 import torch
@@ -9,21 +8,29 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 
 
-@dataclass
 class DistributedContext:
-    enabled: bool
-    rank: int = 0
-    world_size: int = 1
-    local_rank: int = 0
-    backend: str | None = None
-    device: torch.device | None = None
+    def __init__(
+        self,
+        enabled,
+        rank=0,
+        world_size=1,
+        local_rank=0,
+        backend=None,
+        device=None,
+    ):
+        self.enabled = enabled
+        self.rank = rank
+        self.world_size = world_size
+        self.local_rank = local_rank
+        self.backend = backend
+        self.device = device
 
     @property
-    def is_main_process(self) -> bool:
+    def is_main_process(self):
         return self.rank == 0
 
 
-def init_distributed_mode(base_device: torch.device) -> DistributedContext:
+def init_distributed_mode(base_device):
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     if world_size <= 1:
         return DistributedContext(enabled=False, device=base_device)
@@ -48,12 +55,12 @@ def init_distributed_mode(base_device: torch.device) -> DistributedContext:
     )
 
 
-def cleanup_distributed(distributed: DistributedContext) -> None:
+def cleanup_distributed(distributed):
     if distributed.enabled and dist.is_initialized():
         dist.destroy_process_group()
 
 
-def wrap_ddp(module, distributed: DistributedContext):
+def wrap_ddp(module, distributed):
     if not distributed.enabled:
         return module
     return DistributedDataParallel(
@@ -63,7 +70,7 @@ def wrap_ddp(module, distributed: DistributedContext):
     )
 
 
-def reduce_mean(value, distributed: DistributedContext) -> torch.Tensor:
+def reduce_mean(value, distributed):
     if not torch.is_tensor(value):
         device = distributed.device or torch.device("cpu")
         value = torch.tensor(value, device=device)
@@ -75,7 +82,7 @@ def reduce_mean(value, distributed: DistributedContext) -> torch.Tensor:
     return reduced
 
 
-def reduce_sum(value, distributed: DistributedContext) -> torch.Tensor:
+def reduce_sum(value, distributed):
     if not torch.is_tensor(value):
         device = distributed.device or torch.device("cpu")
         value = torch.tensor(value, device=device)

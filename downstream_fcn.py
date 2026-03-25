@@ -144,7 +144,7 @@ def shard_validation_set(val_set, distributed):
     if not distributed.enabled:
         return val_set
     indices = torch.arange(len(val_set))
-    shards = torch.tensor_split(indices, distributed.world_size)
+    shards = torch.chunk(indices, distributed.world_size)
     return Subset(val_set, shards[distributed.rank].tolist())
 
 
