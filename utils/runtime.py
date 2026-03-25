@@ -2,12 +2,24 @@
 Runtime helpers for selecting the best available accelerator and keeping
 backend-specific behavior in one place.
 """
-from contextlib import nullcontext
 import os
 import platform
 import warnings
 
 import torch
+
+try:
+    from contextlib import nullcontext
+except ImportError:
+    class nullcontext(object):
+        def __init__(self, enter_result=None):
+            self.enter_result = enter_result
+
+        def __enter__(self):
+            return self.enter_result
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
 
 
 def get_best_device() -> torch.device:
@@ -26,7 +38,7 @@ def configure_torch_runtime(device: torch.device) -> None:
     """Apply low-risk runtime defaults for the active backend."""
     try:
         torch.set_float32_matmul_precision("high")
-    except RuntimeError:
+    except (AttributeError, RuntimeError):
         pass
 
     if device.type == "cuda":
