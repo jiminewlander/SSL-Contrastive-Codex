@@ -126,8 +126,15 @@ torchrun --standalone --nproc_per_node=4 downstream_fcn.py
 Notes:
 
 * this path currently supports CUDA only, not MPS or CPU
+* use a modern Python/PyTorch CUDA environment that supports your target GPU architecture; older builds such as Python 3.6 with `torch 1.10.1+cu102` will not run on NVIDIA L40 GPUs
 * `learner.batch_size` in `config_byol.yaml` and `config_pixcl.yaml`, and `trainer.batch_size` in `config_fcn.yaml`, are per-process batch sizes, so the effective global batch size is `batch_size * number_of_processes`
 * TensorBoard logs and checkpoints are written only by rank 0
+* if TensorBoard is unavailable in the environment, training still runs and checkpoints are still written on rank 0
+* on Linux DDP runs, start conservatively with `num_workers: 2` per rank and only increase after a stable baseline run
+
+Observed reference point on one tested 4x L40 node:
+
+* BYOL, `batch_size: 40` per rank, `num_workers: 2`, 3 epochs: about 12 minutes total
 
 ## Apple Silicon notes
 
